@@ -22,21 +22,18 @@ class AgentWithIdentity:
     """
     Cognito M2M認証を使用したAgentCore Identityを利用するエージェント。
     
-    Runtime環境での動作：
-    - workload_name: エージェントデプロイ時に設定される識別子
-    - user_id: InvokeAgentRuntimeのruntimeUserIdヘッダーから自動的に取得される
-      （呼び出し元のシステムが設定、例：API Gateway、Lambda、アプリケーション）
-    
     必要な環境変数：
     - GATEWAY_URL: Slackツールを提供するGatewayのエンドポイント
     - COGNITO_SCOPE: Cognito OAuth2のスコープ
     - WORKLOAD_NAME: （オプション）workload名、デフォルトは"slack-gateway-agent"
+    - USER_ID: (オプション)user-idを設定する、デフォルトは"m2m-user-001"
     """
 
     def __init__(self):
         self.gateway_url = os.environ.get("GATEWAY_URL")
         self.cognito_scope = os.environ.get("COGNITO_SCOPE")
         self.workload_name = os.environ.get("WORKLOAD_NAME", "slack-gateway-agent")
+        self.user_id = os.environ.get("USER_ID", "m2m-user-001")
         self.region = region
         
         # 環境変数の検証
@@ -48,6 +45,7 @@ class AgentWithIdentity:
         logger.info(f"Gateway URL: {self.gateway_url}")
         logger.info(f"Cognito scope: {self.cognito_scope}")
         logger.info(f"Workload name: {self.workload_name}")
+        logger.info(f"User ID: {self.user_id}")
         logger.info(f"AWS Region: {self.region}")
 
     async def get_access_token(self) -> str:
@@ -75,8 +73,8 @@ class AgentWithIdentity:
             
             デコレータが内部で以下を処理：
             1. _get_workload_access_tokenを呼び出してworkload access tokenを取得
-               - workload_name: Runtime環境から取得
-               - user_id: InvokeAgentRuntimeのruntimeUserIdヘッダーから取得
+                - workload_name: Runtime環境から取得
+                - user_id: InvokeAgentRuntimeのruntimeUserIdヘッダーから取得
             2. workload access tokenを使用してOAuth tokenを取得
             3. access_tokenパラメータとして注入
             
