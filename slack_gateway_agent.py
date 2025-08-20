@@ -63,6 +63,7 @@ class AgentWithIdentity:
         # workload access tokenを自動的に取得する
         @requires_access_token(
             provider_name="agentcore-identity-for-gateway",
+            #provider_name="test-identity",
             scopes=[self.cognito_scope],
             auth_flow="M2M",
             force_authentication=False,
@@ -187,16 +188,64 @@ class AgentWithIdentity:
                     model="us.anthropic.claude-sonnet-4-20250514-v1:0",
                     system_prompt=
                     """
-                    あなたはSlack統合アシスタントです。
+                    あなたは「Slack × Web検索（Tavily）」統合アシスタントです。
 
-                    以下の操作が可能です：
-                    - チャンネル一覧の取得と検索
-                    - メッセージの送信（チャンネルまたはスレッド）
-                    - チャンネル履歴の取得
-                    - ユーザー情報の確認
+                    【あなたができること】
+                    - Slack 操作
+                      - チャンネル一覧の取得・検索・ページング
+                      - メッセージ送信（チャンネル/スレッド）
+                      - 履歴・スレッドの取得
+                      - ユーザー情報の確認
+                    - Web 検索（Tavily）
+                      - 指定クエリの検索・要約
+                      - ニュース/技術情報の収集と根拠URLの提示
 
-                    ユーザーのリクエストを理解し、適切なSlack操作を実行してください。
-                    操作結果は明確に報告してください。
+                    【ツール選択の方針】
+                    - ユーザーが Slack に関する意図を述べたら Slack ツールを使う。
+                      - 例：「チャンネル一覧」「このチャンネルに投稿」「履歴を取得」など
+                    - 情報探索・要約・比較などは Tavily を使う。
+                      - 例：「最近の動向を調べて」「このトピックの要点をまとめて」など
+                    - 複合依頼（例：「Webで調べて Slack に投稿」）は
+                      1) Tavily で検索・要約 → 2) Slack で投稿、の順に実行し結果を明確に報告する。
+                      1) SlackからURLを取得 → 2) Tavilyで`extract`ツールを用いて要約し、その結果を返す
+
+                    【Slack ツール利用ルール】
+                    - 利用可能な Slack ツール名は tool_config の一覧（tools/list）に従う。
+                      - 代表例：`conversationsList`, `conversationsHistory`, `conversationsReplies`,
+                        `chatPostMessage`, `usersList` など（接頭辞は環境に依存）。
+                    - `conversationsList`:
+                      - 既定: `types="public_channel"`, `exclude_archived=true`, `limit=100`
+                      - ページング: `response_metadata.next_cursor` があれば `cursor` を付けて再取得。必要ページ数だけ繰り返す。
+                    - `chatPostMessage`:
+                      - 既定: `as_user=false` は環境に依存。`channel` と `text` を必須で渡す。
+                      - 返信は `thread_ts` を指定。
+                    - 発言時の表現は簡潔・丁寧に。長文は要点→詳細の順に整える。
+                    - 権限やインストール状況に依存する操作（私有チャンネル等）は、権限不足時に分かりやすく案内する。
+
+                    【Tavily ツール利用ルール】
+                    - 利用可能な Tavily ツール名は tool_config の一覧に従う（例：`search`）。
+                    - `search`:
+                      - 必須: `query`（ユーザー意図を的確な検索クエリに言い換えて渡す）
+                      - 任意: `search_depth` は既定で `"basic"`。深掘りが必要なら `"advanced"` を使う。
+                    - 検索結果の提示:
+                      - まず結論/要点を箇条書き → 続いて根拠URL（3〜5件）を列挙。
+                      - 日付が重要な話題は発見日時・記事日付を明記。
+                      - 不確実な点はその旨を明記して推測を書かない。
+
+                    - `extract`:
+                      - 用途: 指定された **単一URL** の本文を抽出して要約する（検索は行わない）。
+                      - 必須: `url`（`https://` から始まる完全なURLを渡す）。
+                      - 任意: 追加パラメータは **tool_config の inputSchema に厳密に従う**（未定義の項目は渡さない）。
+                      - 入力バリデーション:
+                        - リダイレクトや短縮URLは最終到達先を想定して扱う。`javascript:` やファイルスキームは拒否。
+                      - 出力フォーマット（推奨）:
+                        - 1行目: 記事タイトル（あれば）/ 発行日（判明時はISO形式）。
+                        - 続けて要点を箇条書き（3〜5項目、数値やスコアは明示）。
+                        - 最後に `出典: <URL>` を添える。引用は必要最小限で、自分の言葉で要約する。
+                      - 使い分け:
+                        - ユーザーが明示的にURLを提示したら **`extract` を優先**。
+                        - サイト内を横断したい/URLが分からないなら `search` を使い、必要に応じて見つけたURLへ `extract` を連鎖実行する。
+                    ユーザーの意図を正しく読み取り、適切なツールを選択し、明確で実用的な結果を返してください。
                     """
                 )
 
@@ -212,14 +261,15 @@ class AgentWithIdentity:
                 # ストリーミングイベントをyieldで返す
                 async for event in agent_stream:
                     # デバッグ用：ツール実行に関するイベントをログ出力
-                    if isinstance(event, dict):
-                        if event.get('current_tool_use'):
-                            tool_info = event.get('current_tool_use')
-                            logger.info(f"🔧 ツール実行中: {tool_info}")
-                        elif event.get('delta') and event['delta'].get('toolUse'):
-                            logger.info(f"🚀 ツール呼び出し開始: {event['delta']['toolUse']}")
-                        elif 'data' in event and 'Tool #' in str(event.get('data', '')):
-                            logger.info(f"📋 ツール情報: {event['data']}")
+                    # if isinstance(event, dict):
+                    #     if event.get('current_tool_use'):
+                    #         tool_info = event.get('current_tool_use')
+                    #         logger.info(f"🔧 ツール実行中: {tool_info}")
+                    #     elif event.get('delta') and event['delta'].get('toolUse'):
+                    #         logger.info(f"🚀 ツール呼び出し開始: {event['delta']['toolUse']}")
+                    #     elif 'data' in event and 'Tool #' in str(event.get('data', '')):
+                    #         logger.info(f"📋 ツール情報: {event['data']}")
+                    print(event)
                     yield event
                     
                 logger.info(f"Slackへのアクセス完了")
@@ -296,5 +346,4 @@ async def slack_agent(payload: Dict[str, Any]):
 if __name__ == "__main__":
     # Slackツール連携エージェントサーバーを起動
     # デフォルトでポート8080でリッスンします
-    logger.info("Slackツール連携エージェントサーバーを起動中...")
     app.run()
